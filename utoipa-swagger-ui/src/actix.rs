@@ -9,7 +9,7 @@ use utoipa::openapi::OpenApi;
 
 use crate::{Config, SwaggerUi};
 
-impl HttpServiceFactory for SwaggerUi {
+impl HttpServiceFactory for SwaggerUi<'_> {
     fn register(self, config: &mut actix_web::dev::AppService) {
         let urls = self
             .urls
@@ -26,6 +26,7 @@ impl HttpServiceFactory for SwaggerUi {
             .app_data(Data::new(Config {
                 urls,
                 oauth: self.oauth,
+                ..Default::default()
             }))
             .to(serve_swagger_ui);
 

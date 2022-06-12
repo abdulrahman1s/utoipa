@@ -84,13 +84,14 @@
 //! [^actix]: **actix-web** feature need to be enabled.
 //!
 //! [^rocket]: **rocket** feature need to be enabled.
-use std::{borrow::Cow, error::Error, sync::Arc};
+use std::{borrow::Cow, error::Error, mem, sync::Arc};
 
 mod actix;
 pub mod oauth;
 mod rocket;
 
 use rust_embed::RustEmbed;
+use serde::{Deserialize, Serialize};
 #[cfg(any(feature = "actix-web", feature = "rocket"))]
 use utoipa::openapi::OpenApi;
 
@@ -105,14 +106,15 @@ struct SwaggerUiDist;
 #[non_exhaustive]
 #[derive(Clone)]
 #[cfg(any(feature = "actix-web", feature = "rocket"))]
-pub struct SwaggerUi {
+pub struct SwaggerUi<'s> {
     path: Cow<'static, str>,
     urls: Vec<(Url<'static>, OpenApi)>,
     oauth: Option<oauth::Config>,
+    config: Option<Config<'s>>,
 }
 
 #[cfg(any(feature = "actix-web", feature = "rocket"))]
-impl SwaggerUi {
+impl<'s> SwaggerUi<'s> {
     /// Create a new [`SwaggerUi`] for given path.
     ///
     /// Path argument will expose the Swagger UI to the user and should be something that
@@ -131,6 +133,7 @@ impl SwaggerUi {
             path: path.into(),
             urls: Vec::new(),
             oauth: None,
+            config: None,
         }
     }
 
@@ -228,14 +231,40 @@ impl SwaggerUi {
 
         self
     }
+
+    /// Add custom [`Config`] into [`SwaggerUi`] which gives users more granular control over
+    /// Swagger UI options.
+    ///
+    /// Methods takes one [`Config`] argument which exposes Swagger UI's configurable options
+    /// to the users.
+    ///
+    /// # Examples
+    ///
+    /// Create a new [`SwaggerUi`] with custom configuration.
+    /// ```rust
+    /// # use utoipa_swagger_ui::{SwaggerUi, Config};
+    /// # use utoipa::OpenApi;
+    /// # #[derive(OpenApi)]
+    /// # #[openapi(handlers())]
+    /// # struct ApiDoc;
+    /// let swagger = SwaggerUi::new("/swagger-ui/{_:.*}")
+    ///     .url("/api-doc/openapi.json", ApiDoc::openapi())
+    ///     .config(Config::new(["/api-doc/openapi1.json", "/api-doc/openapi2.json"]));
+    /// ```
+    pub fn config(mut self, config: Config<'s>) -> Self {
+        self.config = Some(config);
+
+        self
+    }
 }
 
 /// Rust type for Swagger UI url configuration object.
 #[non_exhaustive]
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Serialize, Clone, Debug)]
 pub struct Url<'a> {
     name: Cow<'a, str>,
     url: Cow<'a, str>,
+    #[serde(skip)]
     primary: bool,
 }
 
@@ -325,11 +354,11 @@ impl<'a> From<Cow<'static, str>> for Url<'a> {
     }
 }
 
-/// Object used to alter Swagger UI settings.
+/// Object used to alter Swagger UI [configurations](https://github.com/swagger-api/swagger-ui/blob/master/docs/usage/configuration.md).
 ///
 /// # Examples
 ///
-/// Simple case is to create config directly from url that points to the api doc json.
+/// In simple case create config directly from url that points to the api doc json.
 /// ```rust
 /// # use utoipa_swagger_ui::Config;
 /// let config = Config::from("/api-doc.json");
@@ -359,11 +388,119 @@ impl<'a> From<Cow<'static, str>> for Url<'a> {
 /// );
 /// ```
 #[non_exhaustive]
-#[derive(Default, Clone)]
+#[derive(Default, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Config<'a> {
+    /// Url to fetch external configuration from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_url: Option<String>,
+
+    /// Id of the DOM element where `Swagger UI` will put it's user interface.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "dom_id")]
+    dom_id: Option<String>,
+
+    /// [`Url`] the Swagger UI is serving.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<Url<'a>>,
+
+    /// Name of the primary url if any.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "urls.primaryName")]
+    urls_primary_name: Option<String>,
+
     /// [`Url`]s the Swagger UI is serving.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     urls: Vec<Url<'a>>,
+
+    /// Enables overriding configuration parameters with url query parameters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    query_config_enabled: Option<bool>,
+
+    /// Controls whether [deep linking](https://github.com/swagger-api/swagger-ui/blob/master/docs/usage/deep-linking.md)
+    /// is enabled in OpenAPI spec.
+    ///
+    /// Deep linking automatically scrolls and expands UI to given url fragment.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deep_linking: Option<bool>,
+
+    /// Controls whether operation id is shown in the operation list.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_operaiton_id: Option<bool>,
+
+    /// Default models expansion depth; -1 will completely hide the models.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default_models_expand_depth: Option<usize>,
+
+    /// Default model expansion depth from model example section.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default_model_expand_depth: Option<usize>,
+
+    /// Defines how models is show when API is first rendered.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default_model_rendering: Option<String>,
+
+    /// Define whether request duration in milliseconds is displayed for "Try it out" requests.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_request_duration: Option<bool>,
+
+    /// Controls default expansion for operations and tags.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    doc_expansion: Option<String>,
+
+    /// Defines is filtering of tagged operations allowed with edit box in top bar.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    filter: Option<bool>,
+
+    /// Controls how many tagged operations are shown. By default all operations are shown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_displayed_tags: Option<usize>,
+
+    /// Defines whether extensions are shown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    show_extensions: Option<bool>,
+
+    /// Defines whether common extensions are shown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    show_common_extensions: Option<bool>,
+
+    /// Defines whether "Try it out" section should be enabled by default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    try_it_out_enabled: Option<bool>,
+
+    /// Defines whether request snippets section is enabled. If disabled legacy curl snipped
+    /// will be used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_snippets_enabled: Option<bool>,
+
+    /// Oauth redirect url.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oauth2_redirect_url: Option<String>,
+
+    /// Defines whether request mutated with `requestInterceptor` will be used to produce curl command
+    /// in the UI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    show_mutated_request: Option<bool>,
+
+    /// Define supported http request submit methods.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    supported_submit_methods: Option<Vec<String>>,
+
+    /// Define validator url which is used to validate the Swagger spec. By default the validator swagger.io's
+    /// online validator is used. Setting this to null will disable spec validation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    validator_url: Option<String>,
+
+    /// Enables passing credentials to CORS requests as defined
+    /// [fetch standards](https://fetch.spec.whatwg.org/#credentials).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    with_credentials: Option<bool>,
+
+    /// Defines whether authorizations is persisted through out browser refresh and close.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    persist_authorization: Option<bool>,
+
     /// [`oauth::Config`] the Swagger UI is using for auth flow.
+    #[serde(skip)]
     oauth: Option<oauth::Config>,
 }
 
@@ -377,9 +514,27 @@ impl<'a> Config<'a> {
     /// let config = Config::new(["/api-doc/openapi1.json", "/api-doc/openapi2.json"]);
     /// ```
     pub fn new<I: IntoIterator<Item = U>, U: Into<Url<'a>>>(urls: I) -> Self {
+        // let primary_name = urls.i().find(|url| url.primary);
+
+        let urls = urls
+            .into_iter()
+            .map(|url| url.into())
+            .collect::<Vec<Url<'a>>>();
+        let len = urls.len();
+
         Self {
-            urls: urls.into_iter().map(|url| url.into()).collect(),
-            oauth: None,
+            // url: if len == 1 {
+            //     urls.get_mut(0).map(|referenced| mem::take(referenced))
+            // } else {
+            //     None
+            // },
+            urls: if len > 1 { urls } else { Vec::new() },
+            // urls_primary_name: if primary_name {
+            //     Some(mem::take(&mut primary_url.name).to_string())
+            // } else {
+            //     None
+            // },
+            ..Default::default()
         }
     }
 
@@ -398,10 +553,41 @@ impl<'a> Config<'a> {
         urls: I,
         oauth_config: oauth::Config,
     ) -> Self {
+        let urls = urls
+            .into_iter()
+            .map(|url| url.into())
+            .collect::<Vec<Url<'a>>>();
+        let len = urls.len();
+
         Self {
-            urls: urls.into_iter().map(|url| url.into()).collect(),
+            urls: if len > 1 { urls } else { Vec::new() },
+            // urls_primary_name: if let Some(primary_url) = urls.iter().find(|url| url.primary) {
+            //     Some(mem::take(&mut primary_url.name).to_string())
+            // } else {
+            //     None
+            // },
+            // url: if len == 1 {
+            //     urls.get_mut(0).map(|referenced| mem::take(referenced))
+            // } else {
+            //     None
+            // },
             oauth: Some(oauth_config),
+            ..Default::default()
         }
+    }
+
+    /// Add url to fetch external configuration from.
+    pub fn config_url<S: Into<String>>(mut self, config_url: S) -> Self {
+        self.config_url = Some(config_url.into());
+
+        self
+    }
+
+    /// Add id of the DOM element where `Swagger UI` will put it's user interface.
+    pub fn dom_id<S: Into<String>>(mut self, dom_id: S) -> Self {
+        self.dom_id = Some(dom_id.into());
+
+        self
     }
 }
 
@@ -409,7 +595,7 @@ impl<'a> From<&'a str> for Config<'a> {
     fn from(s: &'a str) -> Self {
         Self {
             urls: vec![Url::from(s)],
-            oauth: None,
+            ..Default::default()
         }
     }
 }
@@ -418,7 +604,7 @@ impl From<String> for Config<'_> {
     fn from(s: String) -> Self {
         Self {
             urls: vec![Url::from(s)],
-            oauth: None,
+            ..Default::default()
         }
     }
 }

@@ -15,7 +15,7 @@ use rocket::{
 
 use crate::{Config, SwaggerFile, SwaggerUi};
 
-impl From<SwaggerUi> for Vec<Route> {
+impl From<SwaggerUi<'_>> for Vec<Route> {
     fn from(swagger_ui: SwaggerUi) -> Self {
         let mut routes = Vec::<Route>::with_capacity(swagger_ui.urls.len() + 1);
         let mut api_docs = Vec::<Route>::with_capacity(swagger_ui.urls.len());
